@@ -1,0 +1,157 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: minijudge
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-minijudge-local}
+      POSTGRES_DB: postgres
+      PROBLEM_DB_PASSWORD: ${PROBLEM_DB_PASSWORD:-problem-local}
+      SUBMISSION_DB_PASSWORD: ${SUBMISSION_DB_PASSWORD:-submission-local}
+      JUDGE_DB_PASSWORD: ${JUDGE_DB_PASSWORD:-judge-local}
+    ports:
+      - "${POSTGRES_PORT:-5433}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./postgres/init-databases.sql:/docker-entrypoint-initdb.d/10-init-databases.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U minijudge -d postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  rabbitmq:
+    image: rabbitmq:4-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: minijudge
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-minijudge-local}
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  problem-service:
+    image: minijudge/problem-service:local
+    build:
+      context: ..
+      dockerfile: Dockerfile.service
+      args:
+        APP_MODULE: problem-service
+    environment:
+      SERVER_PORT: 8081
+      DATABASE_URL: jdbc:postgresql://postgres:5432/problems
+      DATABASE_USERNAME: problem_service
+      DATABASE_PASSWORD: ${PROBLEM_DB_PASSWORD:-problem-local}
+      MINIJUDGE_INTERNAL_API_KEY: ${MINIJUDGE_INTERNAL_API_KEY:-local-internal-key}
+    ports:
+      - "${PROBLEM_SERVICE_PORT:-8081}:8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8081/actuator/health | grep -q '\"status\":\"UP\"'"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+
+  submission-service:
+    image: minijudge/submission-service:local
+    build:
+      context: ..
+      dockerfile: Dockerfile.service
+      args:
+        APP_MODULE: submission-service
+    environment:
+      SERVER_PORT: 8082
+      DATABASE_URL: jdbc:postgresql://postgres:5432/submissions
+      DATABASE_USERNAME: submission_service
+      DATABASE_PASSWORD: ${SUBMISSION_DB_PASSWORD:-submission-local}
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      RABBITMQ_USERNAME: minijudge
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-minijudge-local}
+    ports:
+      - "${SUBMISSION_SERVICE_PORT:-8082}:8082"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8082/actuator/health | grep -q '\"status\":\"UP\"'"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+
+  judge-service:
+    image: minijudge/judge-service:local
+    build:
+      context: ..
+      dockerfile: Dockerfile.service
+      args:
+        APP_MODULE: judge-service
+    environment:
+      SERVER_PORT: 8083
+      DATABASE_URL: jdbc:postgresql://postgres:5432/judge
+      DATABASE_USERNAME: judge_service
+      DATABASE_PASSWORD: ${JUDGE_DB_PASSWORD:-judge-local}
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      RABBITMQ_USERNAME: minijudge
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-minijudge-local}
+      PROBLEM_SERVICE_URL: http://problem-service:8081
+      MINIJUDGE_INTERNAL_API_KEY: ${MINIJUDGE_INTERNAL_API_KEY:-local-internal-key}
+      RUNNER_IMAGE: minijudge/java-runner:21
+      EXECUTION_CPUS: ${EXECUTION_CPUS:-1}
+      EXECUTION_PIDS_LIMIT: ${EXECUTION_PIDS_LIMIT:-64}
+    ports:
+      - "${JUDGE_SERVICE_PORT:-8083}:8083"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    group_add:
+      - "${DOCKER_GID:-0}"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      problem-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8083/actuator/health | grep -q '\"status\":\"UP\"'"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+
+  minijudge-cli:
+    image: minijudge/cli:local
+    profiles: ["cli"]
+    build:
+      context: ..
+      dockerfile: Dockerfile.service
+      args:
+        APP_MODULE: minijudge-cli
+    environment:
+      MINIJUDGE_PROBLEM_URL: http://problem-service:8081
+      MINIJUDGE_SUBMISSION_URL: http://submission-service:8082
+    depends_on:
+      problem-service:
+        condition: service_healthy
+      submission-service:
+        condition: service_healthy
+    entrypoint: ["java", "-jar", "/app/app.jar"]
+
+volumes:
+  postgres-data:
+  rabbitmq-data:

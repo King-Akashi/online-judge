@@ -1,0 +1,26 @@
+FROM maven:3.9.9-eclipse-temurin-21 AS build
+
+WORKDIR /workspace
+COPY pom.xml .
+COPY contracts contracts
+COPY problem-service problem-service
+COPY submission-service submission-service
+COPY judge-service judge-service
+COPY minijudge-cli minijudge-cli
+
+ARG APP_MODULE
+RUN mvn -B -ntp -pl ${APP_MODULE} -am package -DskipTests
+
+FROM eclipse-temurin:21-jre-alpine
+
+RUN apk add --no-cache curl docker-cli \
+    && addgroup -S -g 10001 minijudge \
+    && adduser -S -u 10001 -G minijudge minijudge
+
+WORKDIR /app
+ARG APP_MODULE
+COPY --from=build /workspace/${APP_MODULE}/target/${APP_MODULE}-1.0.0-SNAPSHOT.jar /app/app.jar
+USER 10001:10001
+
+EXPOSE 8080
+ENTRYPOINT ["java", "-jar", "/app/app.jar"]

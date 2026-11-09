@@ -1,0 +1,9 @@
+.git
+.idea
+.vscode
+**/target
+**/build
+**/node_modules
+**/.env
+**/*.log
+infrastructure/postgres/data
